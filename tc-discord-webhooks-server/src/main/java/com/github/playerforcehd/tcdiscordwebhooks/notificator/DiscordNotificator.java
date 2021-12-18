@@ -16,12 +16,20 @@
 
 package com.github.playerforcehd.tcdiscordwebhooks.notificator;
 
+import com.atlassian.jira.rest.client.JiraRestClient;
+import com.atlassian.jira.rest.client.NullProgressMonitor;
+import com.atlassian.jira.rest.client.domain.Transition;
+import com.atlassian.jira.rest.client.domain.Version;
+import com.atlassian.jira.rest.client.domain.input.TransitionInput;
+import com.atlassian.jira.rest.client.domain.input.VersionInput;
+import com.atlassian.jira.rest.client.internal.jersey.JerseyJiraRestClientFactory;
 import com.github.playerforcehd.tcdiscordwebhooks.discord.DiscordWebHookPayload;
 import com.github.playerforcehd.tcdiscordwebhooks.discord.DiscordWebHookProcessor;
 import com.github.playerforcehd.tcdiscordwebhooks.discord.embeds.DiscordEmbed;
 import com.github.playerforcehd.tcdiscordwebhooks.discord.embeds.DiscordEmbedColor;
 import com.github.playerforcehd.tcdiscordwebhooks.discord.embeds.DiscordEmbedField;
 import jetbrains.buildServer.Build;
+import jetbrains.buildServer.issueTracker.Issue;
 import jetbrains.buildServer.notification.Notificator;
 import jetbrains.buildServer.notification.NotificatorRegistry;
 import jetbrains.buildServer.responsibility.ResponsibilityEntry;
@@ -34,17 +42,20 @@ import jetbrains.buildServer.tests.TestName;
 import jetbrains.buildServer.users.NotificatorPropertyKey;
 import jetbrains.buildServer.users.PropertyKey;
 import jetbrains.buildServer.users.SUser;
+import jetbrains.buildServer.vcs.SVcsModification;
 import jetbrains.buildServer.vcs.VcsRoot;
 import org.apache.log4j.Logger;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
+import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
+
 
 /**
  * The {@link Notificator} service that handles triggered notifications
@@ -91,10 +102,17 @@ public class DiscordNotificator implements Notificator {
      */
     private final DiscordWebHookProcessor discordWebHookProcessor;
 
+    private static final String DOWNLOAD_BASE_URL = "http://adanix.ir/assets/app/ci-builds/";
     /**
      * The {@link SBuildServer} this {@link Notificator} belongs to
      */
     private SBuildServer sBuildServer;
+    private final static String JIRA_URL = "";
+    private final static String JIRA_USERNAME = "";
+    private final static String JIRA_PASSWORD = "";
+    private final static String SEND_TO_TEST_TRANSITION_NAME = "";
+    private final static String JIRA_PROJECT_KEY = "";
+    private JiraRestClient jiraRestClient = null;
 
     public DiscordNotificator(NotificatorRegistry notificatorRegistry, SBuildServer sBuildServer) {
         this.discordWebHookProcessor = new DiscordWebHookProcessor();
@@ -184,7 +202,7 @@ public class DiscordNotificator implements Notificator {
         }
         discordEmbedFields.add(new DiscordEmbedField("Branch", branchName, true));
         Comment comment = sRunningBuild.getBuildComment();
-        if(comment != null) {
+        if (comment != null) {
             discordEmbedFields.add(new DiscordEmbedField("Comment", comment.getComment(), false));
         }
         return discordEmbedFields.toArray(new DiscordEmbedField[0]);
@@ -192,80 +210,103 @@ public class DiscordNotificator implements Notificator {
 
     @Override
     public void notifyBuildStarted(@NotNull SRunningBuild sRunningBuild, @NotNull Set<SUser> users) {
+        String buildCounter = sRunningBuild.getBuildNumber();
         String title = "Build started";
-        String description = "A build with the ID " + sRunningBuild.getBuildId() + " has been started!";
+        String description = "A build with the No. " + buildCounter + " has been started!";
         DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
         discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                new DiscordEmbed(
-                        title,
-                        description,
-                        "",
-                        DiscordEmbedColor.BLUE,
-                        null,
-                        null,
-                        null,
-                        buildFieldsForRunningBuild(sRunningBuild)
-                )
+            new DiscordEmbed(
+                title,
+                description,
+                "",
+                DiscordEmbedColor.BLUE,
+                null,
+                null,
+                null,
+                buildFieldsForRunningBuild(sRunningBuild)
+            )
         });
         this.processNotify(discordWebHookPayload, users);
     }
 
     @Override
     public void notifyBuildSuccessful(@NotNull SRunningBuild sRunningBuild, @NotNull Set<SUser> users) {
-        String title = "Build succeeded!";
-        String description = "The build with the ID " + sRunningBuild.getBuildId() + " has succeeded!";
+        String buildTypeName = "";
+        String appVersion = "";
+        String ftpAddress = "";
+        String downloadUrl = "";
+        String apkName = "";
+        String releaseName = "";
+        String buildCounter;
+
+        try {
+            buildTypeName = sRunningBuild.getBuildTypeName();
+            apkName = sRunningBuild.getParametersProvider().get("OUTPUT_FILE_NAME");
+            ftpAddress = sRunningBuild.getParametersProvider().get("FTP_DIRECTORY");
+            downloadUrl = (DOWNLOAD_BASE_URL + ftpAddress + apkName).replace(" ", "%20");
+            appVersion = apkName.split("-")[1].replace(".apk", "");
+            releaseName = "Android - " + buildTypeName + " " + appVersion;
+        } catch (Exception e) {
+            //who cares?
+        }
+        Version releaseVersion = releaseVersion(releaseName, downloadUrl);
+        List<com.atlassian.jira.rest.client.domain.Issue> issues = transitRelatedJiraTasks(getAllContainingIssues(sRunningBuild.getContainingChanges()));
+        buildCounter = sRunningBuild.getBuildNumber();
+        String title = buildTypeName + " Version : " + appVersion + " Built successfully!";
+        String description = "The build No. " + buildCounter + " has succeeded!";
         DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
         discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                new DiscordEmbed(
-                        title,
-                        description,
-                        "",
-                        DiscordEmbedColor.GREEN,
-                        null,
-                        null,
-                        null,
-                        buildFieldsForRunningBuild(sRunningBuild)
-                )
+            new DiscordEmbed(
+                title,
+                description,
+                downloadUrl,
+                DiscordEmbedColor.GREEN,
+                null,
+                null,
+                null,
+                buildFieldsForRunningBuild(sRunningBuild)
+            )
         });
         this.processNotify(discordWebHookPayload, users);
     }
 
     @Override
     public void notifyBuildFailed(@NotNull SRunningBuild sRunningBuild, @NotNull Set<SUser> users) {
-        String title = "Build failed";
-        String description = "The build with the ID " + sRunningBuild.getBuildId() + " has failed!";
+        String buildCounter = sRunningBuild.getBuildNumber();
+        String title = "Build failed ";
+        String description = "The build No." + buildCounter + " has failed!";
         DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
         discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                new DiscordEmbed(
-                        title,
-                        description,
-                        "",
-                        DiscordEmbedColor.RED,
-                        null,
-                        null,
-                        null,
-                        buildFieldsForRunningBuild(sRunningBuild)
-                )
+            new DiscordEmbed(
+                title,
+                description,
+                "",
+                DiscordEmbedColor.RED,
+                null,
+                null,
+                null,
+                buildFieldsForRunningBuild(sRunningBuild)
+            )
         });
         this.processNotify(discordWebHookPayload, users);
     }
 
     @Override
     public void notifyBuildFailedToStart(@NotNull SRunningBuild sRunningBuild, @NotNull Set<SUser> users) {
-        String title = "Build failed to start";
+        String title = "Build failed to start : Build number " + sRunningBuild.getBuildNumber();
         String description = "The build with the ID " + sRunningBuild.getBuildId() + " has failed to start!";
         DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
         discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                new DiscordEmbed(
-                        title,
-                        description,
-                        "",
-                        DiscordEmbedColor.RED,
-                        null,
-                        null,
-                        null,
-                        buildFieldsForRunningBuild(sRunningBuild)
-                )
+            new DiscordEmbed(
+                title,
+                description,
+                "",
+                DiscordEmbedColor.RED,
+                null,
+                null,
+                null,
+                buildFieldsForRunningBuild(sRunningBuild)
+            )
         });
         this.processNotify(discordWebHookPayload, users);
     }
@@ -276,16 +317,16 @@ public class DiscordNotificator implements Notificator {
         String description = "Labeling of build with the ID " + build.getBuildId() + " has failed!";
         DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
         discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                new DiscordEmbed(
-                        title,
-                        description,
-                        "",
-                        DiscordEmbedColor.RED,
-                        null,
-                        null,
-                        null,
-                        new DiscordEmbedField[]{}
-                )
+            new DiscordEmbed(
+                title,
+                description,
+                "",
+                DiscordEmbedColor.RED,
+                null,
+                null,
+                null,
+                new DiscordEmbedField[]{}
+            )
         });
         this.processNotify(discordWebHookPayload, users);
     }
@@ -296,16 +337,16 @@ public class DiscordNotificator implements Notificator {
         String description = "The build with the ID " + sRunningBuild.getBuildId() + " is failing!";
         DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
         discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                new DiscordEmbed(
-                        title,
-                        description,
-                        "",
-                        DiscordEmbedColor.RED,
-                        null,
-                        null,
-                        null,
-                        buildFieldsForRunningBuild(sRunningBuild)
-                )
+            new DiscordEmbed(
+                title,
+                description,
+                "",
+                DiscordEmbedColor.RED,
+                null,
+                null,
+                null,
+                buildFieldsForRunningBuild(sRunningBuild)
+            )
         });
         this.processNotify(discordWebHookPayload, users);
     }
@@ -316,16 +357,16 @@ public class DiscordNotificator implements Notificator {
         String description = "The build with the ID " + sRunningBuild.getBuildId() + " is probably hanging!";
         DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
         discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                new DiscordEmbed(
-                        title,
-                        description,
-                        "",
-                        DiscordEmbedColor.ORANGE,
-                        null,
-                        null,
-                        null,
-                        buildFieldsForRunningBuild(sRunningBuild)
-                )
+            new DiscordEmbed(
+                title,
+                description,
+                "",
+                DiscordEmbedColor.ORANGE,
+                null,
+                null,
+                null,
+                buildFieldsForRunningBuild(sRunningBuild)
+            )
         });
         this.processNotify(discordWebHookPayload, users);
     }
@@ -336,16 +377,16 @@ public class DiscordNotificator implements Notificator {
         String description = "The responsibility for the build type " + sBuildType.getExtendedFullName() + " has changed!";
         DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
         discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                new DiscordEmbed(
-                        title,
-                        description,
-                        "",
-                        DiscordEmbedColor.ORANGE,
-                        null,
-                        null,
-                        null,
-                        new DiscordEmbedField[]{}
-                )
+            new DiscordEmbed(
+                title,
+                description,
+                "",
+                DiscordEmbedColor.ORANGE,
+                null,
+                null,
+                null,
+                new DiscordEmbedField[]{}
+            )
         });
         this.processNotify(discordWebHookPayload, users);
     }
@@ -356,16 +397,16 @@ public class DiscordNotificator implements Notificator {
         String description = "Responsibility for build type " + sBuildType.getExtendedFullName() + " has been assigned!";
         DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
         discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                new DiscordEmbed(
-                        title,
-                        description,
-                        "",
-                        DiscordEmbedColor.ORANGE,
-                        null,
-                        null,
-                        null,
-                        new DiscordEmbedField[]{}
-                )
+            new DiscordEmbed(
+                title,
+                description,
+                "",
+                DiscordEmbedColor.ORANGE,
+                null,
+                null,
+                null,
+                new DiscordEmbedField[]{}
+            )
         });
         this.processNotify(discordWebHookPayload, users);
     }
@@ -376,16 +417,16 @@ public class DiscordNotificator implements Notificator {
         String description = "Responsibility for the project " + sProject.getFullName() + " has changed!";
         DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
         discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                new DiscordEmbed(
-                        title,
-                        description,
-                        "",
-                        DiscordEmbedColor.ORANGE,
-                        null,
-                        null,
-                        null,
-                        new DiscordEmbedField[]{}
-                )
+            new DiscordEmbed(
+                title,
+                description,
+                "",
+                DiscordEmbedColor.ORANGE,
+                null,
+                null,
+                null,
+                new DiscordEmbedField[]{}
+            )
         });
         this.processNotify(discordWebHookPayload, users);
     }
@@ -396,16 +437,16 @@ public class DiscordNotificator implements Notificator {
         String description = "Responsibility for project " + sProject.getFullName() + " has been assigned!";
         DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
         discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                new DiscordEmbed(
-                        title,
-                        description,
-                        "",
-                        DiscordEmbedColor.ORANGE,
-                        null,
-                        null,
-                        null,
-                        new DiscordEmbedField[]{}
-                )
+            new DiscordEmbed(
+                title,
+                description,
+                "",
+                DiscordEmbedColor.ORANGE,
+                null,
+                null,
+                null,
+                new DiscordEmbedField[]{}
+            )
         });
         this.processNotify(discordWebHookPayload, users);
     }
@@ -416,16 +457,16 @@ public class DiscordNotificator implements Notificator {
         String description = "Responsibility for project " + sProject.getFullName() + " has been changed!";
         DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
         discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                new DiscordEmbed(
-                        title,
-                        description,
-                        "",
-                        DiscordEmbedColor.ORANGE,
-                        null,
-                        null,
-                        null,
-                        new DiscordEmbedField[]{}
-                )
+            new DiscordEmbed(
+                title,
+                description,
+                "",
+                DiscordEmbedColor.ORANGE,
+                null,
+                null,
+                null,
+                new DiscordEmbedField[]{}
+            )
         });
         this.processNotify(discordWebHookPayload, users);
     }
@@ -436,16 +477,16 @@ public class DiscordNotificator implements Notificator {
         String description = "Responsibility for one or more tests of project " + sProject.getFullName() + " have been assigned!";
         DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
         discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                new DiscordEmbed(
-                        title,
-                        description,
-                        "",
-                        DiscordEmbedColor.ORANGE,
-                        null,
-                        null,
-                        null,
-                        new DiscordEmbedField[]{}
-                )
+            new DiscordEmbed(
+                title,
+                description,
+                "",
+                DiscordEmbedColor.ORANGE,
+                null,
+                null,
+                null,
+                new DiscordEmbedField[]{}
+            )
         });
         this.processNotify(discordWebHookPayload, users);
     }
@@ -456,16 +497,16 @@ public class DiscordNotificator implements Notificator {
         String description = "Responsibility for one or more build problems of project " + sProject.getFullName() + " have been assigned!";
         DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
         discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                new DiscordEmbed(
-                        title,
-                        description,
-                        "",
-                        DiscordEmbedColor.ORANGE,
-                        null,
-                        null,
-                        null,
-                        new DiscordEmbedField[]{}
-                )
+            new DiscordEmbed(
+                title,
+                description,
+                "",
+                DiscordEmbedColor.ORANGE,
+                null,
+                null,
+                null,
+                new DiscordEmbedField[]{}
+            )
         });
         this.processNotify(discordWebHookPayload, users);
     }
@@ -476,16 +517,16 @@ public class DiscordNotificator implements Notificator {
         String description = "Responsibility for one or more tests of project " + sProject.getFullName() + " has been changed!";
         DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
         discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                new DiscordEmbed(
-                        title,
-                        description,
-                        "",
-                        DiscordEmbedColor.ORANGE,
-                        null,
-                        null,
-                        null,
-                        new DiscordEmbedField[]{}
-                )
+            new DiscordEmbed(
+                title,
+                description,
+                "",
+                DiscordEmbedColor.ORANGE,
+                null,
+                null,
+                null,
+                new DiscordEmbedField[]{}
+            )
         });
         this.processNotify(discordWebHookPayload, users);
     }
@@ -498,16 +539,16 @@ public class DiscordNotificator implements Notificator {
             String description = "One or more tests of the project " + muteInfo.getProject().getFullName() + " have been muted!";
             DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
             discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                    new DiscordEmbed(
-                            title,
-                            description,
-                            "",
-                            DiscordEmbedColor.ORANGE,
-                            null,
-                            null,
-                            null,
-                            new DiscordEmbedField[]{}
-                    )
+                new DiscordEmbed(
+                    title,
+                    description,
+                    "",
+                    DiscordEmbedColor.ORANGE,
+                    null,
+                    null,
+                    null,
+                    new DiscordEmbedField[]{}
+                )
             });
             this.processNotify(discordWebHookPayload, users);
         }
@@ -521,16 +562,16 @@ public class DiscordNotificator implements Notificator {
             String description = "One or more tests of the project " + muteInfo.getProject().getFullName() + " have been unmuted!";
             DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
             discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                    new DiscordEmbed(
-                            title,
-                            description,
-                            "",
-                            DiscordEmbedColor.ORANGE,
-                            null,
-                            null,
-                            null,
-                            new DiscordEmbedField[]{}
-                    )
+                new DiscordEmbed(
+                    title,
+                    description,
+                    "",
+                    DiscordEmbedColor.ORANGE,
+                    null,
+                    null,
+                    null,
+                    new DiscordEmbedField[]{}
+                )
             });
             this.processNotify(discordWebHookPayload, users);
         }
@@ -544,16 +585,16 @@ public class DiscordNotificator implements Notificator {
             String description = "One or more build problems of the project " + muteInfo.getProject().getFullName() + " have been muted!";
             DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
             discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                    new DiscordEmbed(
-                            title,
-                            description,
-                            "",
-                            DiscordEmbedColor.ORANGE,
-                            null,
-                            null,
-                            null,
-                            new DiscordEmbedField[]{}
-                    )
+                new DiscordEmbed(
+                    title,
+                    description,
+                    "",
+                    DiscordEmbedColor.ORANGE,
+                    null,
+                    null,
+                    null,
+                    new DiscordEmbedField[]{}
+                )
             });
             this.processNotify(discordWebHookPayload, users);
         }
@@ -567,16 +608,16 @@ public class DiscordNotificator implements Notificator {
             String description = "One or more build problems of the project " + muteInfo.getProject().getFullName() + " have been unmuted!";
             DiscordWebHookPayload discordWebHookPayload = new DiscordWebHookPayload();
             discordWebHookPayload.setEmbeds(new DiscordEmbed[]{
-                    new DiscordEmbed(
-                            title,
-                            description,
-                            "",
-                            DiscordEmbedColor.ORANGE,
-                            null,
-                            null,
-                            null,
-                            new DiscordEmbedField[]{}
-                    )
+                new DiscordEmbed(
+                    title,
+                    description,
+                    "",
+                    DiscordEmbedColor.ORANGE,
+                    null,
+                    null,
+                    null,
+                    new DiscordEmbedField[]{}
+                )
             });
             this.processNotify(discordWebHookPayload, users);
         }
@@ -592,5 +633,63 @@ public class DiscordNotificator implements Notificator {
     @Override
     public String getDisplayName() {
         return DISPLAY_NAME;
+    }
+
+    private Transition getTransitionByName(Iterable<Transition> transitions, String transitionName) {
+        for (Transition transition : transitions) {
+            if (transition.getName().equals(transitionName)) {
+                return transition;
+            }
+        }
+        return null;
+    }
+
+    private List<com.atlassian.jira.rest.client.domain.Issue> transitRelatedJiraTasks(Collection<Issue> issues) {
+        List<com.atlassian.jira.rest.client.domain.Issue> jiraIssues = new ArrayList<>();
+        try {
+            loginToJira();
+            NullProgressMonitor pm = new NullProgressMonitor();
+            for (Issue tcIssue : issues) {
+                com.atlassian.jira.rest.client.domain.Issue jiraIssue = jiraRestClient.getIssueClient().getIssue(tcIssue.getId(), pm);
+                jiraIssues.add(jiraIssue);
+                Iterable<Transition> transitions = jiraRestClient.getIssueClient().getTransitions(jiraIssue, pm);
+                Transition startProgressTransition = getTransitionByName(transitions, SEND_TO_TEST_TRANSITION_NAME);
+                jiraRestClient.getIssueClient().transition(jiraIssue.getTransitionsUri(), new TransitionInput(startProgressTransition.getId()), pm);
+            }
+        } catch (Exception e) {
+
+        }
+        return jiraIssues;
+    }
+
+    private Version releaseVersion(String versionName, String versionDesc) {
+        try {
+            loginToJira();
+            VersionInput versionInput = new VersionInput(JIRA_PROJECT_KEY, versionName, versionDesc, null, false, false);
+            return jiraRestClient.getVersionRestClient().createVersion(versionInput, new NullProgressMonitor());
+        } catch (Exception e) {
+            return null;
+        }
+
+    }
+
+    private List<Issue> getAllContainingIssues(List<SVcsModification> modifications) {
+        List<Issue> issues = new ArrayList<>();
+        for (SVcsModification modification : modifications) {
+            issues.addAll(modification.getRelatedIssues());
+        }
+        return issues;
+    }
+
+    private void loginToJira() {
+        if (jiraRestClient != null) return;
+        try {
+            URI jiraServerUri = new URI(JIRA_URL);
+            JerseyJiraRestClientFactory factory = new JerseyJiraRestClientFactory();
+            jiraRestClient = factory.createWithBasicHttpAuthentication(jiraServerUri, JIRA_USERNAME, JIRA_PASSWORD);
+        } catch (URISyntaxException e) {
+            e.printStackTrace();
+        }
+
     }
 }

@@ -48,6 +48,14 @@
             <version>${teamcity-version}</version>
             <scope>test</scope>
         </dependency>
+
+        <!-- https://mvnrepository.com/artifact/com.atlassian.jira/jira-rest-java-client -->
+        <dependency>
+            <groupId>com.atlassian.jira</groupId>
+            <artifactId>jira-rest-java-client</artifactId>
+            <version>1.0</version>
+        </dependency>
+
     </dependencies>
 
     <build>
